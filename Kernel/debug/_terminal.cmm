@@ -1,0 +1,93 @@
+;/**
+;* @file _terminal.cmm
+;* @brief CMM file for Kernel Message
+;* @author etinum codeguru
+;* @Copyright 2010 Samsung Electronics Co., Ltd.
+;* @version 0.2
+;* @date 2010.12.05
+;*/
+LOCAL &buffaddr
+LOCAL &staddr
+LOCAL &edaddr
+LOCAL &curroffset
+LOCAL &nextoffset
+LOCAL &filename
+LOCAL &i &j
+
+&buffaddr=v.value(__log_buf)
+
+&staddr=&buffaddr
+&edaddr=&buffaddr+0x40000
+&curroffset=&staddr
+
+&filename="&fname"+"-kernel.txt"
+
+GOSUB UseDataString
+GOSUB end
+
+UseDataString:
+
+  AREA.Create kernel 512. 4096.
+  AREA.OPEN kernel "&filename"
+  AREA.Select kernel
+  AREA.view kernel
+
+  WinRESIZE 115. 25.
+  SCREEN.OFF
+
+  &i=0
+  WHILE &curroffset<&edaddr
+  (
+    WHILE data.byte(d:&curroffset+&i)!=0x0A
+    (
+      IF data.byte(d:&curroffset+&i)==0x00
+      (
+        IF &i==0
+        (
+          WHILE data.byte(d:&curroffset+&i)==0x0 ;/* There are null data before valid data, replace them with a space. */
+          (
+            &i=&i+1
+            IF &i>=0x200 ;/* No more data */
+            (
+              &nextoffset=&edaddr
+              goto next_offset
+            )
+          )
+          &j=0
+          WHILE &j<&i
+          (
+            data.set &curroffset+&j 0x20
+            &j=&j+1
+          )
+        )
+        ELSE IF &curroffset+&i>=&edaddr+1 ;/* The valid data is exist at the end of buffer. */
+        (
+          data.set &edaddr 0x00
+          &i=&edaddr-&curroffset
+        )
+        ELSE ;/* There is only one null data before valid data */
+          data.set &curroffset+&i 0x0A
+      )
+      ELSE
+        &i=&i+1
+    )
+    IF data.byte(d:&curroffset+&i-1)==0x0D
+    (
+      data.set &curroffset+&i-1 0x20
+    )
+    data.set &curroffset+&i 0x0
+    &nextoffset=&curroffset+&i+1
+    PRINT data.string(d:&curroffset)
+
+next_offset:
+    &i=0
+    &curroffset=&nextoffset
+  )
+
+  SCREEN.display
+  AREA.CLOSE kernel
+
+RETURN
+
+end:
+  ENDDO

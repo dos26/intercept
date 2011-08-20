@@ -1,0 +1,501 @@
+;/* 
+; * Copyright (C) 2010 Samsung Electronics
+; * File        : logparser.cmm
+; * Author      : Euntaik Lee
+; * Description : Parses memory stored logger.c logs and printk logs
+; * Note        : FuncEpoch2DateStr is a C to CMM(Practice Language)
+; *               translation of the Linux's time_to_tm function
+; * Version     : 0.1
+; * History     : 2010.12.05 created
+; *
+; */
+
+LOCAL &logname
+LOCAL &debug
+LOCAL &utc9
+
+ENTRY &logname
+IF "&logname"==""
+  &logname="kernel"
+
+&debug=0
+&utc9=9.*60.*60.
+
+
+
+IF &debug==1
+(
+  area.create debug 200. 10000.
+  area.select debug
+  area debug
+)
+
+GOSUB FuncMain
+
+
+;===================================================
+; FuncMain : Main function.
+;===================================================
+FuncMain:
+  IF "&logname"=="kernel"
+    GOSUB FuncPrintPrintkLogs
+  ELSE
+    GOSUB FuncPrintLoggerLogs
+  GOSUB FuncExit
+  RETURN
+
+;===================================================
+; FuncExit: Safe exit function
+;===================================================
+FuncExit:
+ENDDO
+
+;===================================================
+; FuncGetSaveFileName: Generates a unique file name
+;===================================================
+FuncGetSaveFileName:
+  LOCAL &strtime &fname &strtmp &strtmp2
+  GOSUB FuncEpoch2DateStr CLOCK.UNIX() &utc9 1
+  ENTRY &strtime
+  &strtime=STRING.CUT("&strtime",1)
+  &strtime=STRING.CUT("&strtime",-1)
+  &fname="&strtime&logname.log"
+
+  RETURN "&fname"
+
+;===================================================
+; FuncPrintPrintkLogs: Prints printk logs
+;===================================================
+FuncPrintPrintkLogs:
+
+  LOCAL &parsemethod
+  LOCAL &buffaddr &buffsize
+  &parsemethod=0
+
+  &buffaddr=v.value(__log_buf)
+  &buffsize=0x40000
+
+
+
+  IF &parsemethod==1
+  (
+    LOCAL &fname
+    LOCAL &stridx
+    LOCAL &curridx
+    LOCAL &strlog
+    LOCAL &linecnt
+    LOCAL &bytedata
+
+    GOSUB FuncGetSaveFileName
+    ENTRY &fname
+
+    OPEN #1 "&fname" /Create
+
+    &curridx=0
+    &stridx=0
+
+    WHILE &curridx<&buffsize
+    (
+      &bytedata=data.byte(sd:(&buffaddr+&curridx))
+      IF (&bytedata==0)||(&bytedata==0xA)
+      (
+        data.set &buffaddr+&curridx 0x0
+        &strlog=data.string(SD:(&buffaddr+&stridx))
+        data.set &buffaddr+&curridx 0xA
+        WRITE #1 "&strlog"
+
+        &stridx=&curridx+1
+        &linecnt=&linecnt+1
+        ;print "&linecnt"
+      )
+      &curridx=&curridx+1
+    )
+  
+    CLOSE #1
+    EDIT "&fname"
+  )
+  ELSE
+  ( 
+    LOCAL &curroffset &nextoffset
+    area.create kmsg 200. 10000.
+    area.select kmsg
+    area kmsg
+    &curroffset=&buffaddr
+
+    WHILE &curroffset<(&buffaddr+&buffsize)
+    (
+      &nextoffset=&curroffset+0x1000
+      data.string &curroffset--&nextoffset
+      &curroffset=&nextoffset
+    )
+
+  )
+  RETURN
+
+;===================================================
+; FuncPrintLoggerLogs: Prints logger.c logs
+;===================================================
+FuncPrintLoggerLogs:
+  LOCAL &buffaddr
+  LOCAL &staddr &edaddr
+  LOCAL &currentry &nextentry &woffaddr
+  LOCAL &entrysize
+  LOCAL &logoffset
+  LOCAL &headersize
+  LOCAL &i
+  LOCAL &strmodule
+  LOCAL &strlog
+  LOCAL &date &timesec &timenanosec
+  LOCAL &pid &tid
+  LOCAL &unusedaddr
+  LOCAL &savefile
+  LOCAL &temp &temp2
+  LOCAL &numstr
+  LOCAL &entryaddrfixup &fixedaddr
+  LOCAL &loglvl
+  
+  &unusedaddr=0xf0000000
+  &entryaddrfixup=1
+  
+    
+  &headersize=20.
+  
+  &buffaddr=v.value(log_&logname.buffer)
+  
+  &staddr=&buffaddr
+  &edaddr=&buffaddr+v.value(log_&logname.size)
+  &woffaddr=&buffaddr+v.value(log_&logname.w_off)
+  &currentry=&buffaddr+v.value(log_&logname.head)
+  print &currentry
+  &nextentry
+
+  ; -------------------------------------------
+  ; Relocate log to unused address
+  ; -------------------------------------------
+  IF v.value(log_&logname.head)>v.value(log_&logname.w_off)
+  (
+    data.copy &currentry--&edaddr &unusedaddr /BYTE
+    data.copy &staddr--&currentry (&unusedaddr+(&edaddr-&currentry)) /BYTE
+  )
+  ELSE
+  (
+    data.copy &currentry--&woffaddr &unusedaddr /BYTE
+  )
+
+  &currentry=&unusedaddr
+
+
+  &edaddr=&unusedaddr+v.value(log_&logname.size)
+
+  IF v.value(log_&logname.head)>v.value(log_&logname.w_off)
+    &woffaddr=&edaddr-(v.value(log_&logname.head)-v.value(log_&logname.w_off))
+  ELSE
+    &woffaddr=&currentry+(v.value(log_&logname.w_off)-v.value(log_&logname.head))
+  
+  &staddr=&unusedaddr
+
+  IF &debug==1
+  (
+    LOCAL &debug1 &debug2
+    &debug1=v.value(log_&logname.head)
+    &debug2=v.value(log_&logname.w_off)
+    print "head=&debug1 w_off=&debug2currentry=&currentry edaddr=&edaddr woffaddr=&woffaddr"
+  )
+  ; -------------------------------------------
+
+  GOSUB FuncEpoch2DateStr CLOCK.UNIX() &utc9 1
+  ENTRY &savefile
+  &temp="-"
+  &temp="&temp&logname"
+  &temp2=".log"
+  &temp="&temp&temp2"
+  &savefile="&savefile&temp"
+  
+  OPEN #1 "&savefile" /Create
+  ;area.reset
+  
+  WHILE (&currentry<&edaddr)&&(&currentry<&woffaddr)
+  (
+    &entrysize=data.short(sd:&currentry)
+    ;print "entrysize=&entrysize"
+    &nextentry=&currentry+&entrysize+&headersize  
+
+    IF (&entryaddrfixup==1)||(&debug==1)
+    ( 
+      LOCAL &i &temp
+      &i=0
+      &temp=&entrysize
+      &numstr=0
+      &fixedaddr=0
+      WHILE &temp>0
+      (
+        IF data.byte(sd:(&currentry+&headersize+&i))==0
+          &numstr=&numstr+1
+        IF (&numstr==2)&&(&fixedaddr==0)
+          &fixedaddr=&currentry+&headersize+&i+1
+        &temp=&temp-1
+        &i=&i+1
+      )
+      IF (&fixedaddr!=0)&&(&fixedaddr!=&nextentry)
+      (
+        LOCAL &addr1 &addr2
+        &addr1=FORMAT.HEX(8.,&nextentry)
+        &addr2=FORMAT.HEX(8.,&fixedaddr)
+        print "Bad entry addr found &addr1. It should be &addr2"
+        &nextentry=&fixedaddr
+      )
+    )
+
+    &i=0
+    WHILE data.byte(sd:(&currentry+&headersize+&i))!=0
+    (
+     &i=&i+1
+    )
+    &i=&i+1
+    ; get pid & tid
+    &pid=data.long(sd:(&currentry+0x4))+0.
+    &tid=data.long(sd:(&currentry+0x8))+0.
+    &pid=FORMAT.DECIMAL(5.,&pid)
+    &tid=FORMAT.DECIMAL(5.,&tid)
+  
+    ; get time
+    &timesec=data.long(sd:(&currentry+0xc))+0.
+    &timenanosec=data.long(sd:(&currentry+0x10))+0.
+  
+    GOSUB FuncEpoch2DateStr &timesec &utc9 0
+    ENTRY &date
+    &date=STRING.CUT("&date",1)
+    &date=STRING.CUT("&date",-1)
+    &timenanosec=FORMAT.DECIMAL(9.,&timenanosec)
+
+    ; get log level
+    GOSUB FuncLogLvl2Str data.byte(sd:(&currentry+&headersize))
+    ENTRY &loglvl
+
+    ; get module name
+    &strmodule=data.string(sd:(&currentry+&headersize+1))
+    ;data.string (&currentry+&headersize+1)++&i
+  
+    ; get log
+    &strlog=data.string(sd:(&currentry+&headersize+&i))
+    ;data.string (&currentry+&headersize+&i)--&nextentry
+  
+    ;print "[PID=&pid TID=&tid][&timesec&timenanosec][&strmodule] &strlog"
+    WRITE #1 "&date.&timenanosec PID=&pid TID=&tid [&loglvl/&strmodule] &strlog"
+    
+    IF &debug==1
+    (
+      &currentry=FORMAT.HEX(8.,&currentry)
+      print "ENTRY INFO: addr=&currentry size=&entrysize numstr=&numstr [&date.&timenanosec]"
+    )
+    &currentry=&nextentry
+  )
+
+  CLOSE #1
+  EDIT "&savefile"
+  RETURN
+
+
+;===================================================
+; FuncLogLvl2Str: Get string names for log levels
+;===================================================
+FuncLogLvl2Str:
+  LOCAL &str
+  LOCAL &lvl
+  ENTRY &lvl
+
+  ; VERBOSE
+  IF &lvl==2
+    &str="V"
+
+  ; DEBUG
+  IF &lvl==3
+    &str="D"
+
+  ; INFO
+  IF &lvl==4
+    &str="I"
+
+  ; WARN
+  IF &lvl==5
+    &str="W"
+
+  ; ERROR
+  IF &lvl==6
+    &str="E"
+
+  ; ASSERT
+  IF &lvl==7
+    &str="A"
+
+  RETURN &str
+
+
+FuncEpoch2DateStr:
+  LOCAL &totalsecs
+  LOCAL &format
+  LOCAL &datestr
+  LOCAL &year &month &day &hour &min &sec
+  LOCAL &rem
+  LOCAL &days &y
+  LOCAL &SECS_PER_HOUR
+  LOCAL &SECS_PER_DAY
+  LOCAL &tm_hour &tm_min &tm_sec &tm_wday &tm_year &tm_yday &tm_mon &tm_mday
+  LOCAL &isleap
+  LOCAL &yeardays
+
+  ; Get arguments
+  ENTRY &totalsecs &offset &format
+  ;format 0 : 2010-12-01 23:48:11
+  ;format 1 : 20101201234811
+  ;format 2+: TBD
+  
+  var.New uint[13] \NormalYears
+  var.New uint[13] \LeapYears
+  var.set \NormalYears[0.]=0
+  var.set \NormalYears[1.]=31.
+  var.set \NormalYears[2.]=59.
+  var.set \NormalYears[3.]=90.
+  var.set \NormalYears[4.]=120.
+  var.set \NormalYears[5.]=151.
+  var.set \NormalYears[6.]=181.
+  var.set \NormalYears[7.]=212.
+  var.set \NormalYears[8.]=243.
+  var.set \NormalYears[9.]=273.
+  var.set \NormalYears[10.]=304.
+  var.set \NormalYears[11.]=334.
+  var.set \NormalYears[12.]=365.
+  var.set \LeapYears[0.]=0
+  var.set \LeapYears[1.]=31.
+  var.set \LeapYears[2.]=60.
+  var.set \LeapYears[3.]=91.
+  var.set \LeapYears[4.]=121.
+  var.set \LeapYears[5.]=152.
+  var.set \LeapYears[6.]=182.
+  var.set \LeapYears[7.]=213.
+  var.set \LeapYears[8.]=244.
+  var.set \LeapYears[9.]=274.
+  var.set \LeapYears[10.]=305.
+  var.set \LeapYears[11.]=335.
+  var.set \LeapYears[12.]=366.
+
+  &SECS_PER_HOUR=60.*60.
+  &SECS_PER_DAY=&SECS_PER_HOUR*24.
+  
+  &days=&totalsecs/&SECS_PER_DAY
+  &rem=&totalsecs%&SECS_PER_DAY
+  &rem=&rem+&offset
+
+  WHILE &rem<0.
+  (
+    &rem=&rem+&SECS_PER_DAY
+    &days=&days-1.
+  )
+  WHILE &rem>=&SECS_PER_DAY
+  (
+    &rem=&rem-&SECS_PER_DAY
+    &days=&days+1.
+  )
+
+  &tm_hour=&rem/&SECS_PER_HOUR;
+  &rem=&rem%&SECS_PER_HOUR;
+
+
+  &tm_min=&rem/60.;
+  &tm_sec=&rem%60.;
+  
+  ;/* January 1, 1970 was a Thursday. */
+  &tm_wday=(4.+&days)%7.;
+  if &tm_wday<0.
+  	&tm_wday=&tm_wday+7.;
+  
+  &y=1970.;
+  &isleap=0.;
+  &yeardays=365.
+  
+  WHILE (&days<0.)||(&days>=&yeardays)
+  (
+    ;/* Guess a corrected year, assuming 365 days per year. */
+    LOCAL &yg
+    LOCAL &leaps1 &leaps2 &leaps_between
+    
+    &yg=&y+(&days/365.);
+    
+    ;/* Adjust DAYS and Y to match the guessed year. */
+    &leaps1=((&y-1.)/4.)-((&y-1.)/100.)+((&y-1.)/400.)
+    &leaps2=((&yg-1.)/4.)-((&yg-1.)/100.)+((&yg-1.)/400.)
+    &leaps_between=&leaps2-&leaps1
+    &days=&days-((&yg-&y)*365.+&leaps_between);
+    &y=&yg;
+    &isleap=0;
+    IF (&y%4.==0.)&&((&y%100.!=0)||(&y%400.==0))
+    (
+      &isleap=1.
+    )
+    IF &isleap==1.
+      &yeardays=366.
+    ELSE
+      &yeardays=365.
+  )
+  
+  &tm_year=&y-1900.;
+  &tm_yday=&days;
+  
+  IF (&y%4.==0.)&&((&y%100.!=0)||(&y%400.==0))
+  (
+    ;leap year
+    &y=11.
+    WHILE (&days<v.value(\LeapYears[&y]))
+    (
+      &y=&y-1.
+    )
+    &days=&days-v.value(\LeapYears[&y]);	
+  )
+  ELSE
+  (
+    ;normal year
+    &y=11.
+    WHILE (&days<v.value(\NormalYears[&y]))
+    (
+      &y=&y-1.
+    )
+    &days=&days-v.value(\NormalYears[&y]);	
+  )
+  &tm_mon=&y+1.;
+  &tm_mday=&days+1;
+  &tm_year=&tm_year+1900.
+
+  ; remove trailing dots
+  &tm_year=STRING.CUT("&tm_year",-1)
+  &tm_mon=STRING.CUT("&tm_mon",-1)
+  &tm_mday=STRING.CUT("&tm_mday",-1)
+  &tm_hour=STRING.CUT("&tm_hour",-1)
+  &tm_min=STRING.CUT("&tm_min",-1)
+  &tm_sec=STRING.CUT("&tm_sec",-1)
+
+  ; fill with 0 for one digit numbers
+  IF STRING.LEN("&tm_mon")<2
+	&tm_mon="0&tm_mon"
+  IF STRING.LEN("&tm_mday")<2
+	&tm_mday="0&tm_mday"
+  IF STRING.LEN("&tm_hour")<2
+	&tm_hour="0&tm_hour"
+  IF STRING.LEN("&tm_min")<2
+	&tm_min="0&tm_min"
+  IF STRING.LEN("&tm_sec")<2
+	&tm_sec="0&tm_sec"
+
+  IF &format==0
+    &datestr="&tm_year-&tm_mon-&tm_mday &tm_hour:&tm_min:&tm_sec"
+  ELSE
+    &datestr="&tm_year&tm_mon&tm_mday&tm_hour&tm_min&tm_sec"   
+  
+  RETURN "&datestr"
+
+
+
+
+
+
+
+

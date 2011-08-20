@@ -1,0 +1,222 @@
+;/**
+;* @file _terminal4.cmm
+;* @brief CMM file for RIL Message
+;* @author codeguru
+;* @Copyright 2010 Samsung Electronics Co., Ltd.
+;* @version 0.1
+;* @date 2010.12.05
+;*/
+LOCAL &buffaddr
+LOCAL &staddr
+LOCAL &edaddr
+LOCAL &curroffset
+LOCAL &nextoffset
+LOCAL &filename
+
+;struct logger_entry {
+;	__u16		len;	/* length of the payload */
+;	__u16		__pad;	/* no matter what, we get 2 bytes of padding */
+;	__s32		pid;	/* generating process's pid */
+;	__s32		tid;	/* generating process's tid */
+;	__s32		sec;	/* seconds since Epoch */
+;	__s32		nsec;	/* nanoseconds */
+;	char		msg[0];	/* the entry's payload */
+
+LOCAL &len &pad &pid &tid &sec &nsec
+LOCAL &Y &M &d &h &m &s
+LOCAL &temp &adj &addd
+
+LOCAL &i
+;LOCAL &j ;/* for debugging index */
+LOCAL &check
+LOCAL &task &msg
+
+&buffaddr=v.value(_buf_log_radio)
+
+&staddr=&buffaddr
+&edaddr=&buffaddr+0x40000
+&curroffset=&staddr
+
+&filename="&fname"+"-ril.txt"
+
+GOSUB UseDataString
+GOSUB end
+
+UseDataString:
+
+  AREA.Create ril 1024. 4096.
+  AREA.OPEN ril "&filename"
+  AREA.Select ril
+  AREA.view ril
+
+  WinRESIZE 115. 25.
+  SCREEN.OFF
+
+;  &curroffset=&curroffset+0x26
+  &i=0
+;  &j=1
+  WHILE data.byte(d:&curroffset+&i)!=0x00
+  (
+    &i=&i+1
+  )
+  &curroffset=&curroffset+&i+1
+
+  WHILE &curroffset<&edaddr
+  (
+    &check=0
+    &len=data.word(d:&curroffset)
+
+    IF &len>1100.
+    (
+      &M=1.
+      &d=1
+      &h=9
+      &m=0
+      &s=0
+      &nsec=0
+      &pid=0
+      &tid=0
+      &check=1
+      GOTO skip_header
+    )
+
+    &pad=data.word(d:&curroffset+0x2)
+
+    &pid=data.long(d:&curroffset+0x4)
+    &tid=data.long(d:&curroffset+0x8)
+    &sec=data.long(d:&curroffset+0xC)
+
+    &temp=&sec%3600. ;/* total sec */
+    &s=&temp%60.         ;/* real sec */
+    &m=&temp/60.         ;/* real min */
+    &temp=&sec/3600.  ;/* total hour */
+    &h=&temp%24.+9.  ;/* real hour */
+    &temp=&temp/24.   ;/* total days */
+    IF &h>=24.
+    (
+      &temp=&temp+1
+      &h=&h%24.
+    )
+    &Y=&temp/365.+1970. ;/* total year*/
+    &adj=&temp/365./4.    ;/* adjusted days */
+    &d=&temp%365.-&adj+1 ;/* real date */
+
+    IF &d>334.  ; /* Dec: 31(335~365) */
+    (
+      &M=12.
+      &d=&d-334.
+    )
+    ELSE IF &d>304. ; /* Nov: 30(305~334) */
+    (
+      &M=11.
+      &d=&d-304.
+    )
+    ELSE IF &d>273. ; /* Oct: 31(274~304) */
+    (
+      &M=10.
+      &d=&d-273.
+    )
+    ELSE IF &d>243. ; /* Sep: 30(244~273) */
+    (
+      &M=9.
+      &d=&d-243.
+    )
+    ELSE IF &d>212. ; /* Aug: 31(213~243) */
+    (
+      &M=8.
+      &d=&d-212.
+    )
+    ELSE IF &d>181. ; /* Jul: 31(182~212) */
+    (
+      &M=7.
+      &d=&d-181.
+    )
+    ELSE IF &d>151. ; /* Jun: 30(152~181) */
+    (
+      &M=6.
+      &d=&d-151.
+    )
+    ELSE IF &d>120. ; /* May: 31(121~151) */
+    (
+      &M=5.
+      &d=&d-120.
+    )
+    ELSE IF &d>90. ; /* Apr: 30(91~120) */
+    (
+      &M=4.
+      &d=&d-90.
+    )
+    ELSE IF &d>59. ; /* Mar: 31(60~90) */
+    (
+      &M=3.
+      &d=&d-59.
+    )
+    ELSE IF &d>31. ; /* Feb: 28(32~59) */
+    (
+      &M=2.
+      &d=&d-31.
+    )
+    ELSE ; /* Jan: 31(1~31) */
+    (
+      &M=1.
+    )
+
+    &nsec=data.long(d:&curroffset+0x10) ;/* miliseconds */
+    &nsec=&nsec/1000000.
+
+    &curroffset=&curroffset+0x15 ;/* size of structure + 1 (null) */
+
+skip_header:
+
+;    &j=&j+1
+    &i=0
+    WHILE data.byte(d:&curroffset+&i)!=0x00
+    (
+      &i=&i+1
+      IF data.byte(d:&curroffset+&i)==0x0A
+      (
+        data.set &curroffset+&i 0x20
+      )
+    )
+    &nextoffset=&curroffset+&i+1
+    &task=&curroffset
+
+    IF (&check==1)&&(&i>40)
+    (
+      PRINT &M/10. &M%10. "-" &d/10. &d%10. "  " &h/10. &h%10. ":" &m/10. &m%10. ":" &s/10. &s%10. "." &nsec/100. (&nsec%100.)/10. &nsec%10. " PID=" FORMAT.DECIMAL(5.,&pid) ", TID=" FORMAT.DECIMAL(5,&tid) "  " data.string(d:&task)
+    )
+    ELSE
+    (
+      &i=0
+      &curroffset=&nextoffset
+      WHILE data.byte(d:&curroffset+&i)!=0x00
+      (
+        &i=&i+1
+        IF data.byte(d:&curroffset+&i)==0x0A
+        (
+          IF &curroffset+&i>=&edaddr ;/* The valid data is exist at the end of buffer. */
+          (
+            data.set &edaddr 0x00
+          )
+          else
+          (
+            data.set &curroffset+&i 0x20
+          )
+        )
+      )
+      &nextoffset=&curroffset+&i+1
+      &msg=&curroffset
+
+      PRINT &M/10. &M%10. "-" &d/10. &d%10. "  " &h/10. &h%10. ":" &m/10. &m%10. ":" &s/10. &s%10. "." &nsec/100. (&nsec%100.)/10. &nsec%10. " PID=" FORMAT.DECIMAL(5.,&pid) ", TID=" FORMAT.DECIMAL(5,&tid) "  " data.string(d:&task) " " data.string(d:&msg)
+    )
+
+    &curroffset=&nextoffset
+  )
+
+  SCREEN.display
+  AREA.CLOSE ril
+
+RETURN
+
+end:
+  ENDDO
