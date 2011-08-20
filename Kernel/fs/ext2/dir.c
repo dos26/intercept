@@ -731,4 +731,3 @@ const struct file_operations ext2_dir_operations = {
 #endif
 	.fsync		= ext2_fsync,
 };
-
