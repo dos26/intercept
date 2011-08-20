@@ -1,0 +1,10 @@
+on boot
+#    setprop net.eth0.dns1 10.32.192.11
+#    setprop net.eth0.dns2 10.32.193.11
+    setprop ro.build.product SPH-M910
+    setprop ro.product.device SPH-M910
+    setprop ro.radio.noril yes
+
+service apollo-setup /system/etc/init.SPH-M910.sh
+    oneshot
+
