@@ -1,0 +1,32 @@
+dir /sys 0775 0 0
+file /init.rc /home/bobers/Downloads/stock_kernel_froyo/system/init/init.rc 0664 0 0
+slink /etc system/etc 0777 0 0
+dir /bin 0775 0 0
+dir /lib 0775 0 0
+dir /lib/modules 0775 0 0
+file /lib/modules/crc32.ko /home/bobers/Downloads/stock_kernel_froyo/system/init/lib/modules/crc32.ko 0664 0 0
+#file /lib/modules/ext4.ko /home/bobers/Downloads/stock_kernel_froyo/system/init/lib/modules/ext4.ko 0664 0 0
+file /lib/modules/dhd.ko /home/bobers/Downloads/stock_kernel_froyo/system/init/lib/modules/dhd.ko 0664 0 0
+#file /lib/modules/jbd2.ko /home/bobers/Downloads/stock_kernel_froyo/system/init/lib/modules/jbd2.ko 0664 0 0
+file /lib/modules/dpram.ko /home/bobers/Downloads/stock_kernel_froyo/system/init/lib/modules/dpram.ko 0664 0 0
+file /lib/modules/dpram_recovery.ko /home/bobers/Downloads/stock_kernel_froyo/system/init/lib/modules/dpram_recovery.ko 0664 0 0
+file /lib/modules/param.ko /home/bobers/Downloads/stock_kernel_froyo/system/init/lib/modules/param.ko 0664 0 0
+file /lib/modules/rfs.ko /home/bobers/Downloads/stock_kernel_froyo/system/init/lib/modules/rfs.ko 0664 0 0
+file /lib/modules/xt_TCPMSS.ko /home/bobers/Downloads/stock_kernel_froyo/system/init/lib/modules/xt_TCPMSS.ko 0664 0 0
+file /lib/modules/vibrator.ko /home/bobers/Downloads/stock_kernel_froyo/system/init/lib/modules/vibrator.ko 0664 0 0
+file /lib/modules/xsr.ko /home/bobers/Downloads/stock_kernel_froyo/system/init/lib/modules/xsr.ko 0664 0 0
+file /lib/modules/xsr_debug.ko /home/bobers/Downloads/stock_kernel_froyo/system/init/lib/modules/xsr_debug.ko 0664 0 0
+file /lib/modules/xsr_stl.ko /home/bobers/Downloads/stock_kernel_froyo/system/init/lib/modules/xsr_stl.ko 0664 0 0
+dir /proc 0775 0 0
+file /init.SPH-M910.rc /home/bobers/Downloads/stock_kernel_froyo/system/init/init.SPH-M910.rc 0664 0 0
+file /init /home/bobers/Downloads/stock_kernel_froyo/system/init/init 0777 0 0
+file /init.goldfish.rc /home/bobers/Downloads/stock_kernel_froyo/system/init/init.goldfish.rc 0664 0 0
+dir /sbin 0775 0 0
+file /sbin/adbd /home/bobers/Downloads/stock_kernel_froyo/system/init/sbin/adbd 0775 0 0
+file /sbin/su /home/bobers/Downloads/stock_kernel_froyo/system/init/sbin/su 4755 0 0
+file /sbin/busybox /home/bobers/Downloads/stock_kernel_froyo/system/init/sbin/busybox 0775 0 0
+file /sbin/sdx.sh /home/bobers/Downloads/stock_kernel_froyo/system/init/sbin/sdx.sh 0775 0 0
+file /sbin/remount.sh /home/bobers/Downloads/stock_kernel_froyo/system/init/sbin/remount.sh 0775 0 0
+dir /system 0775 0 0
+file /default.prop /home/bobers/Downloads/stock_kernel_froyo/system/init/default.prop 0664 0 0
+dir /dev 0775 0 0

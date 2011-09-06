@@ -1,7 +1,7 @@
 /*
  * Automatically generated C config: don't edit
  * Linux kernel version: 2.6.32.9
- * Thu Aug 18 22:09:20 2011
+ * Tue Aug 23 12:45:47 2011
  */
 #define AUTOCONF_INCLUDED
 #define CONFIG_MMC_SDHCI_S3C_DMA 1
@@ -540,7 +540,7 @@
 #define CONFIG_DETECT_HUNG_TASK 1
 #define CONFIG_VIDEO_V4L1 1
 #define CONFIG_MMC 1
-#define CONFIG_INITRAMFS_SOURCE "/home/bobers/Downloads/stock_kernel_froyo/system/initramfs_list"
+#define CONFIG_INITRAMFS_SOURCE "/home/z/Downloads/intercept/initramfs/initramfs_list"
 #define CONFIG_VIDEO_SAMSUNG_S5K4CA 1
 #define CONFIG_VIDEO_V4L2 1
 #define CONFIG_S3C_DEV_HSMMC 1
