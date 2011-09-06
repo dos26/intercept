@@ -1,7 +1,12 @@
-/* linux/arch/arm/plat-s3c/time.c
+/*
+ * linux/arch/arm/plat-s3c/hr-time.c
  *
- * Copyright (C) 2003-2005 Simtec Electronics
- *	Ben Dooks, <ben@simtec.co.uk>
+ * SEC Timers
+ *
+ * Copyright (c) 2006 Samsung Electronics
+ *
+ *
+ * SEC (and compatible) Power Manager (Suspend-To-RAM) support
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -19,355 +24,382 @@
  */
 
 #include <linux/kernel.h>
-#include <linux/sched.h>
 #include <linux/init.h>
+#include <linux/delay.h>
 #include <linux/interrupt.h>
-#include <linux/irq.h>
-#include <linux/err.h>
+#include <linux/sched.h>
+#include <linux/spinlock.h>
 #include <linux/clk.h>
+#include <linux/err.h>
+#include <linux/clocksource.h>
+#include <linux/clockchips.h>
 #include <linux/io.h>
 
 #include <asm/system.h>
+#include <mach/hardware.h>
 #include <asm/leds.h>
-#include <asm/mach-types.h>
-
 #include <asm/irq.h>
+#include <asm/mach/irq.h>
+#include <asm/mach/time.h>
+#include <asm/mach-types.h>
 #include <mach/map.h>
 #include <plat/regs-timer.h>
 #include <mach/regs-irq.h>
-#include <asm/mach/time.h>
 #include <mach/tick.h>
 
 #include <plat/clock.h>
 #include <plat/cpu.h>
 
-static unsigned long timer_startval;
-static unsigned long timer_usec_ticks;
 
-#ifndef TICK_MAX
-#define TICK_MAX (0xffff)
-#endif
+static void sec_timer_setup(void);
 
-#define TIMER_USEC_SHIFT 16
-
-/* we use the shifted arithmetic to work out the ratio of timer ticks
- * to usecs, as often the peripheral clock is not a nice even multiple
- * of 1MHz.
- *
- * shift of 14 and 15 are too low for the 12MHz, 16 seems to be ok
- * for the current HZ value of 200 without producing overflows.
- *
- * Original patch by Dimitry Andric, updated by Ben Dooks
-*/
-
-
-/* timer_mask_usec_ticks
- *
- * given a clock and divisor, make the value to pass into timer_ticks_to_usec
- * to scale the ticks into usecs
-*/
-
-static inline unsigned long
-timer_mask_usec_ticks(unsigned long scaler, unsigned long pclk)
+static inline void sec_tick_set_autoreset(void)
 {
-	unsigned long den = pclk / 1000;
+	unsigned long tcon;
 
-	return ((1000 << TIMER_USEC_SHIFT) * scaler + (den >> 1)) / den;
+	tcon  = __raw_readl(S3C_TCON);
+	tcon |= (1<<22);
+	__raw_writel(tcon, S3C_TCON);
 }
 
-/* timer_ticks_to_usec
- *
- * convert timer ticks to usec.
-*/
-
-static inline unsigned long timer_ticks_to_usec(unsigned long ticks)
+static inline void sec_tick_remove_autoreset(void)
 {
-	unsigned long res;
+	unsigned long tcon;	
 
-	res = ticks * timer_usec_ticks;
-	res += 1 << (TIMER_USEC_SHIFT - 4);	/* round up slightly */
-
-	return res >> TIMER_USEC_SHIFT;
+	tcon  = __raw_readl(S3C_TCON);
+	tcon &= ~(1<<22);
+	__raw_writel(tcon, S3C_TCON);
 }
 
-/***
- * Returns microsecond  since last clock interrupt.  Note that interrupts
- * will have been disabled by do_gettimeoffset()
- * IRQs are disabled before entering here from do_gettimeofday()
- */
-
-static unsigned long s3c2410_gettimeoffset (void)
+static void sec_tick_timer_start(unsigned long load_val,
+					int autoreset)
 {
-	unsigned long tdone;
-	unsigned long tval;
+	unsigned long tcon;
+	unsigned long tcnt;
+	unsigned long tcfg1;
+	unsigned long tcfg0;
+	unsigned long tcstat;
 
-	/* work out how many ticks have gone since last timer interrupt */
+	tcon  = __raw_readl(S3C_TCON);
+	tcfg1 = __raw_readl(S3C_TCFG1);
+	tcfg0 = __raw_readl(S3C_TCFG0);
+	
+	tcstat = __raw_readl(S3C_TINT_CSTAT);
+	tcstat |=  0x10;
+	__raw_writel(tcstat, S3C_TINT_CSTAT);
+		
+	tcnt = load_val;
+	tcnt--;
+	__raw_writel(tcnt, S3C_TCNTB(4));
 
-	tval =  __raw_readl(S3C_TCNTO(4));
-	tdone = timer_startval - tval;
+	tcfg1 &= ~S3C_TCFG1_MUX4_MASK;
+	tcfg1 |= S3C_TCFG1_MUX4_DIV1;
 
-	/* check to see if there is an interrupt pending */
+	tcfg0 &= ~S3C_TCFG_PRESCALER1_MASK;
+	tcfg0 |= (0) << S3C_TCFG_PRESCALER1_SHIFT;
+		
+	__raw_writel(tcfg1, S3C_TCFG1);
+	__raw_writel(tcfg0, S3C_TCFG0);
 
-	if (s3c24xx_ostimer_pending()) {
-		/* re-read the timer, and try and fix up for the missed
-		 * interrupt. Note, the interrupt may go off before the
-		 * timer has re-loaded from wrapping.
-		 */
+	tcon &= ~(7<<20);
+	
+	tcon |= S3C_TCON_T4MANUALUPD;
 
-		tval =  __raw_readl(S3C_TCNTO(4));
-		tdone = timer_startval - tval;
+	if (autoreset) 
+		tcon |= S3C_TCON_T4RELOAD;
 
-		if (tval != 0)
-			tdone += timer_startval;
-	}
+	__raw_writel(tcon, S3C_TCON);
 
-	return timer_ticks_to_usec(tdone);
+	
+	/* start the timer running */
+	tcon |= S3C_TCON_T4START;
+	tcon &= ~S3C_TCON_T4MANUALUPD;
+	__raw_writel(tcon, S3C_TCON);
+
 }
 
+static inline void sec_tick_timer_stop(void)
+{
+	unsigned long tcon;
+
+	tcon  = __raw_readl(S3C_TCON);
+	tcon &= ~(1<<20);
+	__raw_writel(tcon, S3C_TCON);
+}
+
+static void sec_sched_timer_start(unsigned long load_val,
+					int autoreset)
+{
+	unsigned long tcon;
+	unsigned long tcnt;
+	unsigned long tcfg1;
+	unsigned long tcfg0;
+	unsigned long tcstat;
+
+	tcstat = __raw_readl(S3C_TINT_CSTAT);
+	tcstat |=  0x04;
+	__raw_writel(tcstat, S3C_TINT_CSTAT);
+
+	tcon  = __raw_readl(S3C_TCON);
+	tcfg1 = __raw_readl(S3C_TCFG1);
+	tcfg0 = __raw_readl(S3C_TCFG0);
+		
+	tcnt = load_val;
+	tcnt--;
+	__raw_writel(tcnt, S3C_TCNTB(2));
+	__raw_writel(tcnt, S3C_TCMPB(2));	
+	
+	tcon &= ~(0x0b<<12);
+	
+	if (autoreset) 
+		tcon |= S3C_TCON_T2RELOAD;
+
+	tcon |= S3C_TCON_T2MANUALUPD;
+
+	__raw_writel(tcon, S3C_TCON);
+	
+
+	
+	/* start the timer running */
+	tcon |= S3C_TCON_T2START;
+	tcon &= ~S3C_TCON_T2MANUALUPD;
+	__raw_writel(tcon, S3C_TCON);
+
+}
 
 /*
- * IRQ handler for the timer
+ * ---------------------------------------------------------------------------
+ * PWM timer 4 ... count down to zero, interrupt, reload
+ * ---------------------------------------------------------------------------
  */
-static irqreturn_t
-s3c2410_timer_interrupt(int irq, void *dev_id)
+static int sec_tick_set_next_event(unsigned long cycles,
+				   struct clock_event_device *evt)
 {
-	timer_tick();
+	sec_tick_timer_start(cycles, 0);
+	return 0;
+}
+ 
+static void sec_tick_set_mode(enum clock_event_mode mode,
+			      struct clock_event_device *evt)
+{
+	switch (mode) {
+	case CLOCK_EVT_MODE_PERIODIC:
+		sec_tick_set_autoreset();
+		break;
+	case CLOCK_EVT_MODE_ONESHOT:
+		sec_tick_timer_stop();
+		sec_tick_remove_autoreset();
+		break;
+	case CLOCK_EVT_MODE_UNUSED:
+	case CLOCK_EVT_MODE_SHUTDOWN:
+		break;
+	case CLOCK_EVT_MODE_RESUME:
+		sec_timer_setup();
+		break;
+	}
+}
+
+static struct clock_event_device clockevent_tick_timer = {
+	.name		= "pwm_timer4",
+	.features       = CLOCK_EVT_FEAT_PERIODIC | CLOCK_EVT_FEAT_ONESHOT,
+	.shift		= 32,
+	.set_next_event	= sec_tick_set_next_event,
+	.set_mode	= sec_tick_set_mode,
+};
+
+irqreturn_t sec_tick_timer_interrupt(int irq, void *dev_id)
+{
+	struct clock_event_device *evt = &clockevent_tick_timer;
+
+	evt->event_handler(evt);
+
 	return IRQ_HANDLED;
 }
 
-static struct irqaction s3c2410_timer_irq = {
-	.name		= "S3C2410 Timer Tick",
+static struct irqaction sec_tick_timer_irq = {
+	.name		= "pwm_timer4",
 	.flags		= IRQF_DISABLED | IRQF_TIMER | IRQF_IRQPOLL,
-	.handler	= s3c2410_timer_interrupt,
+	.handler	= sec_tick_timer_interrupt,
 };
 
-#define use_tclk1_12() ( \
-	machine_is_bast()	|| \
-	machine_is_vr1000()	|| \
-	machine_is_anubis()	|| \
-	machine_is_osiris())
+static void __init  sec_init_dynamic_tick_timer(unsigned long rate)
+{
+	sec_tick_timer_start((rate / HZ) - 1, 1);
+
+	clockevent_tick_timer.mult = div_sc(rate, NSEC_PER_SEC,
+					    clockevent_tick_timer.shift);
+	clockevent_tick_timer.max_delta_ns =
+		clockevent_delta2ns(-1, &clockevent_tick_timer);
+	clockevent_tick_timer.min_delta_ns =
+		clockevent_delta2ns(1, &clockevent_tick_timer);
+
+	clockevent_tick_timer.cpumask = cpumask_of(0);
+	clockevents_register_device(&clockevent_tick_timer);
+}
+
 
 /*
- * Set up timer interrupt, and return the current time in seconds.
- *
- * Currently we only use timer4, as it is the only timer which has no
- * other function that can be exploited externally
+ * ---------------------------------------------------------------------------
+ * PWM timer 2 ... free running 32-bit clock source and scheduler clock
+ * ---------------------------------------------------------------------------
  */
-static void s3c2410_timer_setup (void)
+ 
+static unsigned long sec_mpu_timer2_overflows;
+
+irqreturn_t sec_mpu_timer2_interrupt(int irq, void *dev_id)
 {
-	unsigned long tcon;
-	unsigned long tcnt;
-	unsigned long tcfg1;
-	unsigned long tcfg0;
+	sec_mpu_timer2_overflows++;
 
-	tcnt = TICK_MAX;  /* default value for tcnt */
-
-	/* read the current timer configuration bits */
-
-	tcon = __raw_readl(S3C_TCON);
-	tcfg1 = __raw_readl(S3C_TCFG1);
-	tcfg0 = __raw_readl(S3C_TCFG0);
-
-	/* configure the system for whichever machine is in use */
-
-	if (use_tclk1_12()) {
-		/* timer is at 12MHz, scaler is 1 */
-		timer_usec_ticks = timer_mask_usec_ticks(1, 12000000);
-		tcnt = 12000000 / HZ;
-
-		tcfg1 &= ~S3C_TCFG1_MUX4_MASK;
-		tcfg1 |= S3C_TCFG1_MUX4_TCLK1;
-	} else {
-		unsigned long pclk;
-		struct clk *clk;
-
-		/* for the h1940 (and others), we use the pclk from the core
-		 * to generate the timer values. since values around 50 to
-		 * 70MHz are not values we can directly generate the timer
-		 * value from, we need to pre-scale and divide before using it.
-		 *
-		 * for instance, using 50.7MHz and dividing by 6 gives 8.45MHz
-		 * (8.45 ticks per usec)
-		 */
-
-		/* this is used as default if no other timer can be found */
-
-		clk = clk_get(NULL, "timers");
-		if (IS_ERR(clk))
-			panic("failed to get clock for system timer");
-
-		clk_enable(clk);
-
-		pclk = clk_get_rate(clk);
-
-		/* configure clock tick */
-
-		timer_usec_ticks = timer_mask_usec_ticks(6, pclk);
-
-		tcfg1 &= ~S3C_TCFG1_MUX4_MASK;
-		tcfg1 |= S3C_TCFG1_MUX4_DIV2;
-
-		tcfg0 &= ~S3C_TCFG_PRESCALER1_MASK;
-		tcfg0 |= ((6 - 1) / 2) << S3C_TCFG_PRESCALER1_SHIFT;
-
-		tcnt = (pclk / 6) / HZ;
-	}
-
-	/* timers reload after counting zero, so reduce the count by 1 */
-
-	tcnt--;
-
-	printk(KERN_DEBUG "timer tcon=%08lx, tcnt %04lx, tcfg %08lx,%08lx, usec %08lx\n",
-	       tcon, tcnt, tcfg0, tcfg1, timer_usec_ticks);
-
-	/* check to see if timer is within 16bit range... */
-	if (tcnt > TICK_MAX) {
-		panic("setup_timer: HZ is too small, cannot configure timer!");
-		return;
-	}
-
-	__raw_writel(tcfg1, S3C_TCFG1);
-	__raw_writel(tcfg0, S3C_TCFG0);
-
-	timer_startval = tcnt;
-	__raw_writel(tcnt, S3C_TCNTB(4));
-
-	/* ensure timer is stopped... */
-
-	tcon &= ~(7<<20);
-	tcon |= S3C_TCON_T4RELOAD;
-	tcon |= S3C_TCON_T4MANUALUPD;
-
-	__raw_writel(tcon, S3C_TCON);
-	__raw_writel(tcnt, S3C_TCNTB(4));
-	__raw_writel(tcnt, S3C_TCMPB(4));
-
-	/* start the timer running */
-	tcon |= S3C_TCON_T4START;
-	tcon &= ~S3C_TCON_T4MANUALUPD;
-	__raw_writel(tcon, S3C_TCON);
+	return IRQ_HANDLED;
 }
 
-static void s3c64xx_timer_setup (void)
+struct irqaction sec_timer2_irq = {
+	.name		= "pwm_timer2",
+	.flags		= IRQF_DISABLED ,
+	.handler	= sec_mpu_timer2_interrupt,
+};
+
+
+static cycle_t sec_sched_timer_read(void)
 {
-	unsigned long tcon;
-	unsigned long tcnt;
-	unsigned long tcfg1;
-	unsigned long tcfg0;
 
-	tcnt = TICK_MAX;  /* default value for tcnt */
+	return (cycle_t)~__raw_readl(S3C_TIMERREG(0x2c));
+}
 
-	/* read the current timer configuration bits */
+struct clocksource clocksource_sec= {
+	.name		= "clock_source_timer2",
+	.rating		= 300,
+	.read		= sec_sched_timer_read,
+	.mask		= CLOCKSOURCE_MASK(32),
+	.shift		= 20,
+	.flags		= CLOCK_SOURCE_IS_CONTINUOUS ,
+};
 
-	tcon = __raw_readl(S3C_TCON);
-	tcfg1 = __raw_readl(S3C_TCFG1);
-	tcfg0 = __raw_readl(S3C_TCFG0);
+/*
+ *  Rounds down to nearest nsec.
+ */
+unsigned long long sec_ticks_to_nsecs(unsigned long ticks)
+{
+        return clocksource_cyc2ns(ticks, clocksource_sec.mult, clocksource_sec.shift);
+}
 
-	/* configure the system for whichever machine is in use */
+/*
+ * Returns current time from boot in nsecs. It's OK for this to wrap
+ * around for now, as it's just a relative time stamp.
+ */
+unsigned long long sched_clock(void)
+{
+	static int first = 1;
+	static cycle_t saved_ticks;
+	static int saved_ticks_valid;
+	static unsigned long long base;
+	static unsigned long long last_result;
 
-	if (use_tclk1_12()) {
-		/* timer is at 12MHz, scaler is 1 */
-		timer_usec_ticks = timer_mask_usec_ticks(1, 12000000);
-		tcnt = 12000000 / HZ;
+	unsigned long irq_flags;
+	static cycle_t last_ticks;
+	cycle_t ticks;
+	static unsigned long long result;
 
-		tcfg1 &= ~S3C_TCFG1_MUX4_MASK;
-		tcfg1 |= S3C_TCFG1_MUX4_TCLK1;
-	} else {
-		unsigned long pclk;
-		struct clk *clk;
+	local_irq_save(irq_flags);
 
-		/* for the h1940 (and others), we use the pclk from the core
-		 * to generate the timer values. since values around 50 to
-		 * 70MHz are not values we can directly generate the timer
-		 * value from, we need to pre-scale and divide before using it.
-		 *
-		 * for instance, using 50.7MHz and dividing by 6 gives 8.45MHz
-		 * (8.45 ticks per usec)
-		 */
+	last_ticks = saved_ticks;
+	saved_ticks = ticks = sec_sched_timer_read();
 
-		/* this is used as default if no other timer can be found */
-
-		clk = clk_get(NULL, "timers");
-		if (IS_ERR(clk))
-			panic("failed to get clock for system timer");
-
-		clk_enable(clk);
-
-		pclk = clk_get_rate(clk);
-
-		/* configure clock tick */
-
-		timer_usec_ticks = timer_mask_usec_ticks(6, pclk);
-
-		tcfg1 &= ~S3C_TCFG1_MUX4_MASK;
-		tcfg1 |= S3C_TCFG1_MUX4_DIV1;
-
-		tcfg0 &= ~S3C_TCFG_PRESCALER1_MASK;
-		tcfg0 |= (6) << S3C_TCFG_PRESCALER1_SHIFT;
-
-		tcnt = (pclk / 7) / HZ;
+	if(!saved_ticks_valid)
+	{
+		saved_ticks_valid = 1;
+		last_ticks = ticks;
+		base -= clocksource_cyc2ns(ticks, clocksource_sec.mult, clocksource_sec.shift);
+	}
+	if(ticks < last_ticks)
+	{
+		if (first)
+			first = 0;
+		else
+		{
+			base += clocksource_cyc2ns(clocksource_sec.mask, clocksource_sec.mult, clocksource_sec.shift);
+			base += clocksource_cyc2ns(1, clocksource_sec.mult, clocksource_sec.shift);
+		}
 	}
 
-	/* timers reload after counting zero, so reduce the count by 1 */
+	last_result = result = clocksource_cyc2ns(ticks, clocksource_sec.mult, clocksource_sec.shift)+ base;
 
-	tcnt--;
+	local_irq_restore(irq_flags);
 
-	printk(KERN_DEBUG "timer tcon=%08lx, tcnt %04lx, tcfg %08lx,%08lx, usec %08lx\n",
-	       tcon, tcnt, tcfg0, tcfg1, timer_usec_ticks);
+	return result;
+}
 
-	/* check to see if timer is within 16bit range... */
-	if (tcnt > TICK_MAX) {
-		panic("setup_timer: HZ is too small, cannot configure timer!");
-		return;
-	}
+static void __init sec_init_clocksource(unsigned long rate)
+{
+	static char err[] __initdata = KERN_ERR
+			"%s: can't register clocksource!\n";
 
-	__raw_writel(tcfg1, S3C_TCFG1);
-	__raw_writel(tcfg0, S3C_TCFG0);
+	clocksource_sec.mult
+		= clocksource_khz2mult(rate/1000, clocksource_sec.shift);
 
-	timer_startval = tcnt;
-	__raw_writel(tcnt, S3C_TCNTB(4));
+	sec_sched_timer_start(~0, 1);
 
-	/* ensure timer is stopped... */
+	if (clocksource_register(&clocksource_sec))
+		printk(err, clocksource_sec.name);
+}
 
-	tcon &= ~(7<<20);
-	tcon |= S3C_TCON_T4RELOAD;
-	tcon |= S3C_TCON_T4MANUALUPD;
+/*
+ * ---------------------------------------------------------------------------
+ *  Tick Timer initialization
+ * ---------------------------------------------------------------------------
+ */
+static void sec_dynamic_timer_setup(void)
+{
+	struct clk	*ck_ref = clk_get(NULL, "timers");
+	unsigned long	rate;
 
-	__raw_writel(tcon, S3C_TCON);
-	__raw_writel(tcnt, S3C_TCNTB(4));
-	__raw_writel(tcnt, S3C_TCMPB(4));
+	if (IS_ERR(ck_ref))
+		panic("failed to get clock for system timer");
 
-	/* start the timer running */
-	tcon |= S3C_TCON_T4START;
-	tcon &= ~S3C_TCON_T4MANUALUPD;
-	__raw_writel(tcon, S3C_TCON);
+	rate = clk_get_rate(ck_ref);
+	clk_put(ck_ref);
 
-	/* Timer interrupt Enable */
-	__raw_writel(__raw_readl(S3C_TINT_CSTAT) | S3C_TINT_CSTAT_T4INTEN , S3C_TINT_CSTAT);
+	sec_init_dynamic_tick_timer(rate);
+	sec_init_clocksource(rate);
+
 }
 
 
-static void __init s3c2410_timer_init(void)
+static void sec_timer_setup(void)
 {
-	s3c2410_timer_setup();
-	setup_irq(IRQ_TIMER4, &s3c2410_timer_irq);
+	struct clk	*ck_ref = clk_get(NULL, "timers");
+	unsigned long	rate;
+
+	
+	if (IS_ERR(ck_ref))
+		panic("failed to get clock for system timer");
+
+	rate = clk_get_rate(ck_ref);
+	clk_put(ck_ref);
+
+	sec_tick_timer_start((rate / HZ) - 1, 1);
+	sec_sched_timer_start(~0, 1);
+
 }
 
-static void __init s3c64xx_timer_init(void)
+	
+static void __init sec_dynamic_timer_init(void)
 {
-	s3c64xx_timer_setup();
-	setup_irq(IRQ_TIMER4, &s3c2410_timer_irq);
+	sec_dynamic_timer_setup();
+	setup_irq(IRQ_TIMER2, &sec_timer2_irq);	
+	setup_irq(IRQ_TIMER4, &sec_tick_timer_irq);
 }
+
+
+struct sys_timer sec_timer = {
+	.init		= sec_dynamic_timer_init,
+};
 
 struct sys_timer s3c24xx_timer = {
 	.init		= s3c2410_timer_init,
-	.offset		= s3c2410_gettimeoffset,
-	.resume		= s3c2410_timer_setup
 };
 
 struct sys_timer s3c64xx_timer = {
 	.init		= s3c64xx_timer_init,
-	.offset		= s3c2410_gettimeoffset,
-	.resume		= s3c64xx_timer_setup
 };
 
