@@ -395,6 +395,7 @@ struct sys_timer sec_timer = {
 	.init		= sec_dynamic_timer_init,
 };
 
+
 struct sys_timer s3c24xx_timer = {
 	.init		= sec_dynamic_timer_init,
 };
